@@ -1,0 +1,126 @@
+#!/usr/bin/env ruby
+
+require 'aws-sdk'
+require 'pry'
+require 'table_print'
+require 'optparse'
+require 'sshkit'
+require 'sshkit/dsl'
+include SSHKit::DSL
+
+fail('error: AWS credentials not set') if ENV['AWS_ACCESS_KEY_ID'].nil?
+
+options = {}
+op = OptionParser.new do |opts|
+  opts.banner = "Usage: #{$0} [options]"
+
+  opts.on("-v", "--[no-]verbose", "Run verbosely") do |v|
+    options[:verbose] = v
+  end
+
+  opts.on_tail("-h", "--help", "Show this message") do
+    puts opts
+    exit
+  end
+
+  opts.on("-p POSITION", "--position POSITION", "Server position") do |p|
+    options[:position] = p || "1"
+  end
+
+  opts.on("--priv", "Connect to the private address") do |p|
+    options[:private] = p
+  end
+
+  opts.on("--distributed", "Send a distributed command to all hosts") do
+    options[:distributed] = true
+  end
+
+  opts.on("-t", "Distributed ssh using tmux") do
+    options[:tmux] = true end
+end
+
+# Exit if no arguments beside flags
+op.parse!
+ARGV.empty? && abort(op.help)
+
+# Arguments parsing
+server_name = ARGV[0]
+user = server_name.split('@').first if server_name.match(/@/)
+server_name = server_name.split('@').last if server_name.match(/@/)
+ssh_args = ARGV[1..-1]
+position = options[:position].to_i - 1
+
+# Connect to aws and retrieve the instance by name
+ec2 = Aws::EC2::Client.new
+
+response = ec2.describe_instances({
+  filters: [
+    { name: "instance-state-name", values: ["running"], },
+  ],
+})
+
+STDOUT.sync = true
+
+instances = response.reservations.map {|r| r.instances}.flatten
+instances.select! do |i| 
+  tag = i.tags.find {|t| t.key == "Name"}.value
+  tag.match(/^#{server_name}$/)
+end
+ip_method = instances.first.public_dns_name.empty? ? :private_ip_address : :public_dns_name 
+addresses = instances.map(&ip_method)
+
+# Run distributed exit only ssh
+begin
+  if options[:distributed]
+    output = []
+    on addresses do |host|
+      output << [host.hostname,capture(ssh_args.join(' '))]
+      print '.'
+    end
+    output.each do |o|
+      puts "\n%s: " % o.first
+      puts o.last
+    end
+    exit
+  end
+rescue => e
+  print "error: "
+  puts e
+  retry
+end
+
+# Use tmux
+if options[:tmux]
+  if instances.size.between? 0,2
+    %x[tmux split-window -v]
+  end
+
+  if instances.size.between? 3,4
+    %x[tmux split-window -v]
+    %x[tmux split-window -h -t1]
+    %x[tmux split-window -h -t2] unless instances.size == 3
+  end
+
+  if instances.size.between? 5,8
+    system "tmux split-window -v"
+    system "tmux split-window -h -t1"
+    system "tmux split-window -h -t2" 
+    system "tmux split-window -v -t1" unless instances.size < 5
+    system "tmux split-window -v -t3" unless instances.size < 6
+    system "tmux split-window -v -t4" unless instances.size < 7
+    system "tmux split-window -v -t2" unless instances.size < 8
+  end
+
+  instances.each_with_index do |instance, i|
+    %x[tmux send-keys -t #{i+1} "clear" Enter]
+    command = "ssh -t -A #{user+"@" unless user.nil?}#{addresses[i]} #{ssh_args.join(' ')}"
+    %x[tmux send-keys -t #{i+1} "#{command}" Enter]
+  end
+  exit
+end
+
+# Use ssh to connect to the server
+instances[position].nil? && abort('error: instance index does not exist')
+command = "ssh -t -A #{user+"@" unless user.nil?}#{addresses[position]} #{ssh_args.join(' ')}"
+exec command
+

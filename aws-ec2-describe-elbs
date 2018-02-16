@@ -1,0 +1,30 @@
+#!/usr/bin/env ruby
+
+require 'aws-sdk'
+require 'pry'
+require 'table_print'
+
+class TableRow
+  attr_accessor :name, :public_dns_name, :out_of_service, :in_service, :total
+end
+
+elb = Aws::ElasticLoadBalancing::Client.new(region: 'eu-west-1')
+
+response = elb.describe_load_balancers.load_balancer_descriptions
+
+table = response.map do |instance|
+    row = TableRow.new
+
+    row.name = instance.load_balancer_name
+    row.public_dns_name = instance.dns_name
+
+    dih = elb.describe_instance_health load_balancer_name: instance.load_balancer_name
+
+    row.out_of_service = dih.instance_states.select {|x| x.state == "OutOfService"}.size
+    row.in_service = dih.instance_states.select {|x| x.state == "InService"}.size
+    row.total = instance.instances.size
+
+    row
+end.flatten.sort_by {|x| x.name }
+
+tp table, :name, :total, :out_of_service, :in_service, { :public_dns_name => {width: 100} }

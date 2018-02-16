@@ -1,0 +1,44 @@
+#!/usr/bin/env ruby
+
+require 'aws-sdk'
+require 'pry'
+require 'table_print'
+
+class TableRow
+  attr_accessor :name, :public_dns_name,:public_ip_address, :private_ip_address, :instance_id, :instance_type
+end
+
+ec2 = Aws::EC2::Client.new
+
+response = ec2.describe_instances({
+  filters: [
+    {
+      name: "instance-state-name",
+      values: ["running"],
+    },
+  ],
+})
+
+
+table = response.reservations.map do |r|
+
+  r.instances.map do |instance|
+
+    row = TableRow.new
+
+    name_tag = instance.tags.select {|t| t.key == "Name" }
+    row.name = name_tag.empty? ? "None" : name_tag.first.value
+    row.instance_id = instance.instance_id
+    row.private_ip_address = instance.private_ip_address
+    row.public_dns_name = instance.public_dns_name
+    row.public_ip_address = instance.public_ip_address
+    row.instance_type = instance.instance_type
+
+    row
+
+  end
+
+end.flatten.sort_by {|x| x.name }
+
+tp table, :name, :instance_id, :instance_type, :private_ip_address,
+  { :public_dns_name => {width: 60} }, :public_ip_address
