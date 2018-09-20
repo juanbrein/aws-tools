@@ -63,9 +63,17 @@ STDOUT.sync = true
 
 instances = response.reservations.map {|r| r.instances}.flatten
 instances.select! do |i| 
-  tag = i.tags.find {|t| t.key == "Name"}.value
-  tag.match(/^#{server_name}$/)
+  if tag = i.tags.find {|t| t.key == "Name"}
+    tag = tag.value
+    tag.match(/^#{server_name}$/)
+  end
 end
+
+if instances.first.nil?
+  puts "ERROR: Instance not found" 
+  exit 
+end
+
 ip_method = instances.first.public_dns_name.empty? ? :private_ip_address : :public_dns_name 
 addresses = instances.map(&ip_method)
 
